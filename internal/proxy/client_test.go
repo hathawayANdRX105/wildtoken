@@ -96,7 +96,7 @@ func TestBackfillsReasoningContentWhenThinkingModeActive(t *testing.T) {
 		`{"role":"tool","content":"ok","tool_call_id":"c2"}` +
 		`]}`)
 
-	prepared := PrepareUpstreamBody(body, nil, "chat/completions")
+	prepared := PrepareUpstreamBody(body, nil, "chat/completions", nil)
 
 	var decoded struct {
 		Messages []map[string]json.RawMessage `json:"messages"`
@@ -126,10 +126,52 @@ func TestLeavesReasoningContentAloneWhenNoThinkingMode(t *testing.T) {
 		`{"role":"tool","content":"ok","tool_call_id":"c1"}` +
 		`]}`)
 
-	prepared := PrepareUpstreamBody(body, nil, "chat/completions")
+	prepared := PrepareUpstreamBody(body, nil, "chat/completions", nil)
 
 	if strings.Contains(string(prepared), "reasoning_content") {
 		t.Errorf("reasoning_content added without thinking mode: %s", prepared)
+	}
+}
+
+func TestStringifiesNonStringToolCallArguments(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"calc","arguments":{"x":1}}}]},` +
+		`{"role":"tool","content":"1","tool_call_id":"c1"},` +
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"c2","type":"function","function":{"name":"ping","arguments":null}}]},` +
+		`{"role":"tool","content":"pong","tool_call_id":"c2"},` +
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"c3","type":"function","function":{"name":"blank"}}]},` +
+		`{"role":"tool","content":"ok","tool_call_id":"c3"},` +
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"c4","type":"function","function":{"name":"kept","arguments":"{\"y\":2}"}}]}` +
+		`]}`)
+
+	prepared := PrepareUpstreamBody(body, nil, "chat/completions", nil)
+
+	var decoded struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(prepared, &decoded); err != nil {
+		t.Fatalf("decode prepared body: %v", err)
+	}
+	var args []string
+	for _, message := range decoded.Messages {
+		if messageRole(message) != "assistant" {
+			continue
+		}
+		var calls []struct {
+			Function struct {
+				Arguments string `json:"arguments"`
+			} `json:"function"`
+		}
+		if err := json.Unmarshal(message["tool_calls"], &calls); err != nil {
+			t.Fatalf("decode tool_calls: %v", err)
+		}
+		for _, call := range calls {
+			args = append(args, call.Function.Arguments)
+		}
+	}
+	want := `{"x":1}|{}|{}|{"y":2}`
+	if got := strings.Join(args, "|"); got != want {
+		t.Errorf("arguments = %q, want %q (prepared: %s)", got, want, prepared)
 	}
 }
 
@@ -139,7 +181,7 @@ func TestFlattensTextOnlyContentArrays(t *testing.T) {
 		`{"role":"user","content":[{"type":"text"}]}` +
 		`]}`)
 
-	prepared := PrepareUpstreamBody(body, nil, "chat/completions")
+	prepared := PrepareUpstreamBody(body, nil, "chat/completions", nil)
 
 	var decoded struct {
 		Messages []map[string]json.RawMessage `json:"messages"`
@@ -164,7 +206,7 @@ func TestPreservesTextPartsWithExtraFields(t *testing.T) {
 		`{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}` +
 		`]}`)
 
-	prepared := PrepareUpstreamBody(body, nil, "v1/messages")
+	prepared := PrepareUpstreamBody(body, nil, "v1/messages", nil)
 
 	if !strings.Contains(string(prepared), "cache_control") {
 		t.Errorf("cache_control dropped by flattening: %s", prepared)
