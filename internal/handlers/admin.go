@@ -26,7 +26,7 @@ import (
 //
 // The release workflow parses this line to check that a tag matches, so its
 // shape must stay `const Version = "..."`.
-const Version = "0.2.1"
+const Version = "0.2.2"
 
 // maxLogListOffset caps how deep the offset-paged log list may reach.
 const maxLogListOffset int32 = 100_000
