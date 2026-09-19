@@ -87,6 +87,52 @@ func TestOpenAIReasoningEffortTakesPrecedenceOverAnthropicOutputConfig(t *testin
 	}
 }
 
+func TestBackfillsReasoningContentWhenThinkingModeActive(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"user","content":"hi"},` +
+		`{"role":"assistant","content":"","reasoning_content":"thinking","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},` +
+		`{"role":"tool","content":"ok","tool_call_id":"c1"},` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"c2","type":"function","function":{"name":"f","arguments":"{}"}}]},` +
+		`{"role":"tool","content":"ok","tool_call_id":"c2"}` +
+		`]}`)
+
+	prepared := PrepareUpstreamBody(body, nil, "chat/completions")
+
+	var decoded struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(prepared, &decoded); err != nil {
+		t.Fatalf("decode prepared body: %v", err)
+	}
+	for i, message := range decoded.Messages {
+		if messageRole(message) != "assistant" {
+			continue
+		}
+		if _, ok := message["reasoning_content"]; !ok {
+			t.Errorf("assistant message %d missing reasoning_content: %s", i, prepared)
+		}
+	}
+	// The turn without its own reasoning gets an empty string, not the prior value.
+	if string(decoded.Messages[3]["reasoning_content"]) != `""` {
+		t.Errorf("backfilled reasoning_content = %s, want empty string",
+			decoded.Messages[3]["reasoning_content"])
+	}
+}
+
+func TestLeavesReasoningContentAloneWhenNoThinkingMode(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"user","content":"hi"},` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},` +
+		`{"role":"tool","content":"ok","tool_call_id":"c1"}` +
+		`]}`)
+
+	prepared := PrepareUpstreamBody(body, nil, "chat/completions")
+
+	if strings.Contains(string(prepared), "reasoning_content") {
+		t.Errorf("reasoning_content added without thinking mode: %s", prepared)
+	}
+}
+
 func assertUsage(t *testing.T, usage TokenUsage, want map[string]any) {
 	t.Helper()
 	got := map[string]any{

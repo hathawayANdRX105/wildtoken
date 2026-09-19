@@ -241,6 +241,7 @@ func PrepareUpstreamBody(body []byte, forwardModel *string, path string,
 			request["stream_options"] = encoded
 		}
 	}
+	normalizeMessages(request, &changed)
 
 	if !changed {
 		return body
@@ -250,6 +251,121 @@ func PrepareUpstreamBody(body []byte, forwardModel *string, path string,
 		return body
 	}
 	return encoded
+}
+
+// contentPart is one element of an array-formatted content field.
+type contentPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// normalizeMessages rewrites the messages array for upstream compatibility.
+//
+// Two fixes, applied in one decode/encode pass:
+//
+//  1. Flatten array-formatted text-only content into plain strings. Some
+//     upstreams (e.g. futureppo.top) reject content: [{"type":"text"}] with
+//     422 because the text field is missing or because they only accept
+//     string content. Multimodal arrays (with image or other non-text parts)
+//     are left untouched.
+//
+//  2. Backfill reasoning_content on assistant messages. When any assistant
+//     turn carries reasoning_content, thinking mode is active and some
+//     upstreams (novaai/deepseek) 400 with "reasoning_content in the thinking
+//     mode must be passed back to the API" unless EVERY assistant message
+//     includes the field. Clients drop it on turns that only emit tool_calls,
+//     so an empty string is inserted to satisfy the round-trip requirement.
+func normalizeMessages(request map[string]json.RawMessage, changed *bool) {
+	rawMessages, ok := request["messages"]
+	if !ok {
+		return
+	}
+	var messages []map[string]json.RawMessage
+	if err := json.Unmarshal(rawMessages, &messages); err != nil {
+		return
+	}
+	msgChanged := false
+
+	thinkingMode := false
+	for i := range messages {
+		if messageRole(messages[i]) == "assistant" {
+			if _, ok := messages[i]["reasoning_content"]; ok {
+				thinkingMode = true
+				break
+			}
+		}
+	}
+
+	for i := range messages {
+		if flattenTextContent(messages[i]) {
+			msgChanged = true
+		}
+		if thinkingMode && messageRole(messages[i]) == "assistant" {
+			if _, ok := messages[i]["reasoning_content"]; !ok {
+				messages[i]["reasoning_content"] = json.RawMessage(`""`)
+				msgChanged = true
+			}
+		}
+	}
+	if msgChanged {
+		encoded, err := json.Marshal(messages)
+		if err == nil {
+			request["messages"] = encoded
+			*changed = true
+		}
+	}
+}
+
+func messageRole(message map[string]json.RawMessage) string {
+	var role string
+	_ = json.Unmarshal(message["role"], &role)
+	return role
+}
+
+// flattenTextContent collapses a text-only content array on one message into a
+// plain string, or drops it when empty and no tool_calls carry the turn. It
+// reports whether the message was modified.
+func flattenTextContent(message map[string]json.RawMessage) bool {
+	rawContent, ok := message["content"]
+	if !ok {
+		return false
+	}
+	// Only arrays need flattening; strings and null pass through.
+	if len(rawContent) == 0 || rawContent[0] != '[' {
+		return false
+	}
+	var parts []contentPart
+	if err := json.Unmarshal(rawContent, &parts); err != nil {
+		return false // not a content-part array, leave as-is
+	}
+	for _, p := range parts {
+		if p.Type != "text" {
+			return false // multimodal array, leave untouched
+		}
+	}
+	// ponytail: join with newline, empty parts contribute nothing
+	texts := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p.Text != "" {
+			texts = append(texts, p.Text)
+		}
+	}
+	flat := strings.Join(texts, "\n")
+	// Some upstreams (futureppo.top) convert empty-string content into
+	// [{"type":"text"}] then reject it with 422. Drop the content field
+	// when it flattens to empty and there are no tool_calls to carry it.
+	if flat == "" {
+		if _, hasTC := message["tool_calls"]; !hasTC {
+			delete(message, "content")
+			return true
+		}
+	}
+	encoded, err := json.Marshal(flat)
+	if err != nil {
+		return false
+	}
+	message["content"] = encoded
+	return true
 }
 
 func requestsStreaming(request map[string]json.RawMessage) bool {
