@@ -255,7 +255,7 @@ func PrepareUpstreamBody(body []byte, forwardModel *string, path string,
 
 // normalizeMessages rewrites the messages array for upstream compatibility.
 //
-// Two fixes, applied in one decode/encode pass:
+// Three fixes, applied in one decode/encode pass:
 //
 //  1. Flatten array-formatted text-only content into plain strings. Some
 //     upstreams (e.g. futureppo.top) reject content: [{"type":"text"}] with
@@ -269,6 +269,11 @@ func PrepareUpstreamBody(body []byte, forwardModel *string, path string,
 //     mode must be passed back to the API" unless EVERY assistant message
 //     includes the field. Clients drop it on turns that only emit tool_calls,
 //     so an empty string is inserted to satisfy the round-trip requirement.
+//
+//  3. Stringify non-string tool_call function arguments. Some clients emit
+//     arguments as a raw JSON object; strict upstreams (Cohere via
+//     OpenRouter) 400 with "tool arguments must be a stringified JSON
+//     object".
 func normalizeMessages(request map[string]json.RawMessage, changed *bool) {
 	rawMessages, ok := request["messages"]
 	if !ok {
@@ -294,6 +299,9 @@ func normalizeMessages(request map[string]json.RawMessage, changed *bool) {
 		if flattenTextContent(messages[i]) {
 			msgChanged = true
 		}
+		if stringifyToolCallArguments(messages[i]) {
+			msgChanged = true
+		}
 		if thinkingMode && messageRole(messages[i]) == "assistant" {
 			if _, ok := messages[i]["reasoning_content"]; !ok {
 				messages[i]["reasoning_content"] = json.RawMessage(`""`)
@@ -314,6 +322,60 @@ func messageRole(message map[string]json.RawMessage) string {
 	var role string
 	_ = json.Unmarshal(message["role"], &role)
 	return role
+}
+
+// stringifyToolCallArguments rewrites assistant tool_calls whose function
+// arguments are not a JSON string. The OpenAI schema types arguments as a
+// string, but some clients (e.g. opencode-review) emit a raw JSON object;
+// strict upstreams (Cohere via OpenRouter) reject those with 400 "tool
+// arguments must be a stringified JSON object". Objects, arrays, numbers and
+// booleans are re-encoded as their JSON text; null becomes "{}". String
+// values (including empty) and absent fields pass through untouched.
+// Reports whether the message was modified.
+func stringifyToolCallArguments(message map[string]json.RawMessage) bool {
+	rawCalls, ok := message["tool_calls"]
+	if !ok || len(rawCalls) == 0 || rawCalls[0] != '[' {
+		return false
+	}
+	var calls []map[string]json.RawMessage
+	if err := json.Unmarshal(rawCalls, &calls); err != nil {
+		return false
+	}
+	changed := false
+	for _, call := range calls {
+		fnRaw, ok := call["function"]
+		if !ok || len(fnRaw) == 0 || fnRaw[0] != '{' {
+			continue
+		}
+		var fn map[string]json.RawMessage
+		if err := json.Unmarshal(fnRaw, &fn); err != nil {
+			continue
+		}
+		rawArgs, present := fn["arguments"]
+		if present && len(rawArgs) > 0 && rawArgs[0] == '"' {
+			continue // already a string
+		}
+		if !present || len(rawArgs) == 0 || bytes.Equal(rawArgs, []byte("null")) {
+			fn["arguments"] = json.RawMessage(`"{}"`)
+		} else if encoded, err := json.Marshal(string(rawArgs)); err == nil {
+			fn["arguments"] = json.RawMessage(encoded)
+		} else {
+			continue
+		}
+		if encodedFn, err := json.Marshal(fn); err == nil {
+			call["function"] = json.RawMessage(encodedFn)
+			changed = true
+		}
+	}
+	if !changed {
+		return false
+	}
+	encodedCalls, err := json.Marshal(calls)
+	if err != nil {
+		return false
+	}
+	message["tool_calls"] = json.RawMessage(encodedCalls)
+	return true
 }
 
 // flattenTextContent collapses a text-only content array on one message into a
