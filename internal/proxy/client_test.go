@@ -133,6 +133,44 @@ func TestLeavesReasoningContentAloneWhenNoThinkingMode(t *testing.T) {
 	}
 }
 
+func TestFlattensTextOnlyContentArrays(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}]},` +
+		`{"role":"user","content":[{"type":"text"}]}` +
+		`]}`)
+
+	prepared := PrepareUpstreamBody(body, nil, "chat/completions")
+
+	var decoded struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(prepared, &decoded); err != nil {
+		t.Fatalf("decode prepared body: %v", err)
+	}
+	var flat string
+	if err := json.Unmarshal(decoded.Messages[0]["content"], &flat); err != nil {
+		t.Fatalf("text-only content should flatten to a string: %v", err)
+	}
+	if flat != "hello\nworld" {
+		t.Errorf("flattened content = %q, want %q", flat, "hello\nworld")
+	}
+	if _, ok := decoded.Messages[1]["content"]; ok {
+		t.Errorf("empty text-only content not dropped: %s", prepared)
+	}
+}
+
+func TestPreservesTextPartsWithExtraFields(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}` +
+		`]}`)
+
+	prepared := PrepareUpstreamBody(body, nil, "v1/messages")
+
+	if !strings.Contains(string(prepared), "cache_control") {
+		t.Errorf("cache_control dropped by flattening: %s", prepared)
+	}
+}
+
 func assertUsage(t *testing.T, usage TokenUsage, want map[string]any) {
 	t.Helper()
 	got := map[string]any{

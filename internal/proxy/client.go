@@ -253,12 +253,6 @@ func PrepareUpstreamBody(body []byte, forwardModel *string, path string,
 	return encoded
 }
 
-// contentPart is one element of an array-formatted content field.
-type contentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
 // normalizeMessages rewrites the messages array for upstream compatibility.
 //
 // Two fixes, applied in one decode/encode pass:
@@ -334,20 +328,28 @@ func flattenTextContent(message map[string]json.RawMessage) bool {
 	if len(rawContent) == 0 || rawContent[0] != '[' {
 		return false
 	}
-	var parts []contentPart
+	var parts []map[string]json.RawMessage
 	if err := json.Unmarshal(rawContent, &parts); err != nil {
 		return false // not a content-part array, leave as-is
-	}
-	for _, p := range parts {
-		if p.Type != "text" {
-			return false // multimodal array, leave untouched
-		}
 	}
 	// ponytail: join with newline, empty parts contribute nothing
 	texts := make([]string, 0, len(parts))
 	for _, p := range parts {
-		if p.Text != "" {
-			texts = append(texts, p.Text)
+		// Fields beyond type/text (cache_control, loss, …) carry semantics
+		// flattening would silently drop; leave the array untouched.
+		for key := range p {
+			if key != "type" && key != "text" {
+				return false
+			}
+		}
+		var partType, text string
+		_ = json.Unmarshal(p["type"], &partType)
+		if partType != "text" {
+			return false // multimodal array, leave untouched
+		}
+		_ = json.Unmarshal(p["text"], &text)
+		if text != "" {
+			texts = append(texts, text)
 		}
 	}
 	flat := strings.Join(texts, "\n")
