@@ -4,7 +4,7 @@ port = 3100
 
 [database]
 url = "sqlite:wildtoken.db?mode=rwc"
-max_connections = 3
+max_connections = 8
 sqlite_cache_size_kib = 2048
 sqlite_statement_cache_capacity = 32
 sqlite_mmap_size_bytes = 0

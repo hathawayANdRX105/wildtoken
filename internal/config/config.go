@@ -64,7 +64,12 @@ func Default() Settings {
 		Server: ServerSettings{Host: "127.0.0.1", Port: 3100},
 		Database: DatabaseSettings{
 			URL:                          "sqlite:wildtoken.db?mode=rwc",
-			MaxConnections:               3,
+			// 8, not 3: a contended BEGIN IMMEDIATE parks its pooled connection
+			// inside busy_timeout for up to 10s. With a pool of 3 that starves
+			// read-only admin queries (RecentOneMinuteLogRate hit its context
+			// deadline on 2026-09-28). WAL lets readers run concurrently, so a
+			// larger pool costs nothing but queueing depth.
+			MaxConnections:               8,
 			SQLiteCacheSizeKiB:           2048,
 			SQLiteStatementCacheCapacity: 32,
 			SQLiteMmapSizeBytes:          0,
