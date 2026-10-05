@@ -240,7 +240,7 @@ port = 3100
 
 [database]
 url = "sqlite:wildtoken.db?mode=rwc"
-max_connections = 3
+max_connections = 8
 
 [upstream]
 default_timeout_seconds = 300.0

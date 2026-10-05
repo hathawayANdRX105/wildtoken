@@ -25,9 +25,14 @@ const (
 	logBodyCleanupBatchPause       = 25 * time.Millisecond
 	// logDeleteBatchSize is how many expired log rows one delete removes.
 	//
-	// Larger than the body batch because the work per row is a delete rather
-	// than a JSON rewrite, and retention has a whole window to get through.
-	logDeleteBatchSize  int64 = 500
+	// Each delete cascades to payload rows whose JSON blobs spill to overflow
+	// pages, so the write lock is held for the whole cascade. A 500-row batch
+	// on a multi-hundred-MB store held it past the DSN busy_timeout, and every
+	// concurrent BEGIN IMMEDIATE failed with SQLITE_BUSY instead of waiting
+	// (the hourly retention tick at 2026-10-01T21:53). A smaller batch bounds
+	// one lock hold well inside the wait budget; the pause between batches
+	// yields the lock to contenders.
+	logDeleteBatchSize  int64 = 60
 	logDeleteBatchPause       = 25 * time.Millisecond
 	// actualModelExpression prefers the model actually sent to the upstream.
 	// `model` is retained as a compatibility fallback for logs written before

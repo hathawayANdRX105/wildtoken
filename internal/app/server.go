@@ -253,12 +253,19 @@ func sqliteDSN(settings config.DatabaseSettings) (string, error) {
 	// default, and it rejects the parameter outside a file: URI.
 	values.Del("mode")
 
+	// synchronous(NORMAL) and a generous busy_timeout pair with WAL (set in
+	// schema.go): FULL fsyncs on every commit, which lengthens the write-lock
+	// hold that retention deletes already stretch, and 5s was shorter than the
+	// worst hold, so concurrent BEGIN IMMEDIATE writers got SQLITE_BUSY instead
+	// of waiting. NORMAL is crash-safe under WAL (it only risks the last commit
+	// on power loss); 10s stays below the log writer's 15s write timeout.
 	pragmas := []string{
 		"foreign_keys(1)",
 		"auto_vacuum(2)",
 		fmt.Sprintf("cache_size(-%d)", max(settings.SQLiteCacheSizeKiB, 256)),
 		fmt.Sprintf("mmap_size(%d)", max(settings.SQLiteMmapSizeBytes, 0)),
-		"busy_timeout(5000)",
+		"busy_timeout(10000)",
+		"synchronous(1)",
 	}
 	for _, pragma := range pragmas {
 		values.Add("_pragma", pragma)
