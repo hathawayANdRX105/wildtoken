@@ -63,7 +63,7 @@ func Default() Settings {
 	return Settings{
 		Server: ServerSettings{Host: "127.0.0.1", Port: 3100},
 		Database: DatabaseSettings{
-			URL:                          "sqlite:wildtoken.db?mode=rwc",
+			URL: "sqlite:wildtoken.db?mode=rwc",
 			// 8, not 3: a contended BEGIN IMMEDIATE parks its pooled connection
 			// inside busy_timeout for up to 10s. With a pool of 3 that starves
 			// read-only admin queries (RecentOneMinuteLogRate hit its context
