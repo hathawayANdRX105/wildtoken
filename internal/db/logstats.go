@@ -110,6 +110,25 @@ func (c *LogStatsCache) RefreshFromDB(ctx context.Context, database *sql.DB) err
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
 
+	// Cheap gate: when the table is unchanged since the last rebuild, the
+	// incremental update path has already folded every committed row into the
+	// cache, so a full scan would only burn CPU to recompute identical totals.
+	// An idle gateway (no new requests, nothing pruned) hits this on every tick
+	// and never scans the table, which removes the periodic CPU spike the
+	// once-per-minute whole-table aggregate used to cause.
+	var tableMaxID sql.NullInt64
+	var tableRowCount int64
+	if err := database.QueryRowContext(ctx, `SELECT MAX(id), COUNT(*) FROM request_logs`).
+		Scan(&tableMaxID, &tableRowCount); err != nil {
+		return apperr.Database(err)
+	}
+	if !tableMaxID.Valid {
+		tableMaxID = sql.NullInt64{Int64: 0, Valid: true}
+	}
+	if tableMaxID.Int64 == c.state.maxRefreshedLogID && tableRowCount == c.state.totalLogCount {
+		return nil
+	}
+
 	var maxLogID sql.NullInt64
 	allTime := logStatsBucket{}
 	err := database.QueryRowContext(ctx, `SELECT
